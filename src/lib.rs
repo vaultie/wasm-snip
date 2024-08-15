@@ -105,7 +105,7 @@ dual licensed as above, without any additional terms or conditions.
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-use failure::ResultExt;
+use anyhow::Context;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -152,7 +152,7 @@ pub struct Options {
 }
 
 /// Snip the functions from the input file described by the options.
-pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), failure::Error> {
+pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), anyhow::Error> {
     if !options.skip_producers_section {
         module
             .producers
@@ -173,7 +173,7 @@ pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), failure
     Ok(())
 }
 
-fn build_regex_set(mut options: Options) -> Result<regex::RegexSet, failure::Error> {
+fn build_regex_set(mut options: Options) -> Result<regex::RegexSet, anyhow::Error> {
     // Snip the Rust `fmt` code, if requested.
     if options.snip_rust_fmt_code {
         // Mangled symbols.
@@ -253,7 +253,11 @@ fn replace_calls_with_unreachable(
     }
 
     impl VisitorMut for Replacer<'_> {
-        fn visit_instr_mut(&mut self, instr: &mut walrus::ir::Instr) {
+        fn visit_instr_mut(
+            &mut self,
+            instr: &mut walrus::ir::Instr,
+            _: &mut walrus::ir::InstrLocId,
+        ) {
             if self.should_snip_call(instr) {
                 *instr = walrus::ir::Unreachable {}.into();
             }
@@ -337,7 +341,7 @@ fn snip_table_elements(module: &mut walrus::Module, to_snip: &HashSet<walrus::Fu
 
             ft.relative_elements
                 .iter_mut()
-                .flat_map(|(_, elems)| elems.iter_mut().filter(|f| to_snip.contains(f)))
+                .flat_map(|(_, elems)| elems.iter_mut().flatten().filter(|f| to_snip.contains(f)))
                 .for_each(|el| {
                     let ty = funcs.get(*el).ty();
                     *el = *unreachable_funcs
