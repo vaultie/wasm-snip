@@ -107,7 +107,6 @@ dual licensed as above, without any additional terms or conditions.
 
 use anyhow::Context;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path;
 use walrus::ir::VisitorMut;
@@ -164,10 +163,6 @@ pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), anyhow:
     let to_snip = find_functions_to_snip(&module, &names, &re_set);
 
     replace_calls_with_unreachable(module, &to_snip);
-    unexport_snipped_functions(module, &to_snip);
-    unimport_snipped_functions(module, &to_snip);
-    snip_table_elements(module, &to_snip);
-    delete_functions_to_snip(module, &to_snip);
     walrus::passes::gc::run(module);
 
     Ok(())
@@ -227,12 +222,6 @@ fn find_functions_to_snip(
         .collect()
 }
 
-fn delete_functions_to_snip(module: &mut walrus::Module, to_snip: &HashSet<walrus::FunctionId>) {
-    for f in to_snip.iter().cloned() {
-        module.funcs.delete(f);
-    }
-}
-
 fn replace_calls_with_unreachable(
     module: &mut walrus::Module,
     to_snip: &HashSet<walrus::FunctionId>,
@@ -273,81 +262,4 @@ fn replace_calls_with_unreachable(
         let entry = func.entry_block();
         walrus::ir::dfs_pre_order_mut(&mut Replacer { to_snip }, func, entry);
     });
-}
-
-fn unexport_snipped_functions(module: &mut walrus::Module, to_snip: &HashSet<walrus::FunctionId>) {
-    let exports_to_snip: HashSet<walrus::ExportId> = module
-        .exports
-        .iter()
-        .filter_map(|e| match e.item {
-            walrus::ExportItem::Function(f) if to_snip.contains(&f) => Some(e.id()),
-            _ => None,
-        })
-        .collect();
-
-    for e in exports_to_snip {
-        module.exports.delete(e);
-    }
-}
-
-fn unimport_snipped_functions(module: &mut walrus::Module, to_snip: &HashSet<walrus::FunctionId>) {
-    let imports_to_snip: HashSet<walrus::ImportId> = module
-        .imports
-        .iter()
-        .filter_map(|i| match i.kind {
-            walrus::ImportKind::Function(f) if to_snip.contains(&f) => Some(i.id()),
-            _ => None,
-        })
-        .collect();
-
-    for i in imports_to_snip {
-        module.imports.delete(i);
-    }
-}
-
-fn snip_table_elements(module: &mut walrus::Module, to_snip: &HashSet<walrus::FunctionId>) {
-    let mut unreachable_funcs: HashMap<walrus::TypeId, walrus::FunctionId> = Default::default();
-
-    let make_unreachable_func = |ty: walrus::TypeId,
-                                 types: &mut walrus::ModuleTypes,
-                                 locals: &mut walrus::ModuleLocals,
-                                 funcs: &mut walrus::ModuleFunctions|
-     -> walrus::FunctionId {
-        let ty = types.get(ty);
-        let params = ty.params().to_vec();
-        let locals: Vec<_> = params.iter().map(|ty| locals.add(*ty)).collect();
-        let results = ty.results().to_vec();
-        let mut builder = walrus::FunctionBuilder::new(types, &params, &results);
-        builder.func_body().unreachable();
-        builder.finish(locals, funcs)
-    };
-
-    for t in module.tables.iter_mut() {
-        if let walrus::TableKind::Function(ref mut ft) = t.kind {
-            let types = &mut module.types;
-            let locals = &mut module.locals;
-            let funcs = &mut module.funcs;
-
-            ft.elements
-                .iter_mut()
-                .flat_map(|el| el)
-                .filter(|f| to_snip.contains(f))
-                .for_each(|el| {
-                    let ty = funcs.get(*el).ty();
-                    *el = *unreachable_funcs
-                        .entry(ty)
-                        .or_insert_with(|| make_unreachable_func(ty, types, locals, funcs));
-                });
-
-            ft.relative_elements
-                .iter_mut()
-                .flat_map(|(_, elems)| elems.iter_mut().flatten().filter(|f| to_snip.contains(f)))
-                .for_each(|el| {
-                    let ty = funcs.get(*el).ty();
-                    *el = *unreachable_funcs
-                        .entry(ty)
-                        .or_insert_with(|| make_unreachable_func(ty, types, locals, funcs));
-                });
-        }
-    }
 }
